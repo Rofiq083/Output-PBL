@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WebGIS Risiko Sesar Lembang</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css">
+<style>
+html,body,#map{height:100%;margin:0;padding:0;}
+#panel{
+  position:absolute;top:10px;right:10px;z-index:1000;
+  background:#fff;padding:14px 16px;border-radius:12px;
+  width:290px;box-shadow:0 3px 14px rgba(0,0,0,.28);
+  font-family:Arial,sans-serif;font-size:13px;
+  max-height:90vh;overflow-y:auto;
+}
+#panel.hidden{display:none}
+#panel h3{margin:0 0 10px;font-size:15px;color:#2c3e50}
+#panel p{margin:5px 0}
+.btn{width:100%;margin-top:6px;padding:8px;border:none;border-radius:8px;cursor:pointer;font-size:13px;color:#fff;}
+.btn-blue{background:#2980b9;} .btn-blue:hover{background:#1a6fa0;}
+.btn-red{background:#c0392b;} .btn-red:hover{background:#a93226;}
+#toggle{
+  position:absolute;top:10px;right:10px;z-index:1100;
+  background:white;border:none;border-radius:8px;padding:10px 14px;
+  cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.25);font-size:13px;
+}
+.floating{
+  position:absolute;bottom:20px;right:20px;z-index:1100;
+  background:#2980b9;border:none;border-radius:50%;
+  width:48px;height:48px;font-size:20px;cursor:pointer;
+  box-shadow:0 2px 10px rgba(0,0,0,.3);color:white;
+}
+#legend{
+  position:absolute;bottom:20px;left:10px;z-index:1000;
+  background:white;padding:10px 14px;border-radius:10px;
+  font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.2);
+  font-family:Arial,sans-serif;line-height:2;
+}
+#legend b{display:block;margin-bottom:2px;font-size:13px;}
+.leg-sym{display:inline-flex;align-items:center;margin-right:6px;}
+.leg-line{display:inline-block;height:3px;width:22px;border-radius:2px;vertical-align:middle;}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:bold;color:#fff;}
+.gps-dot{
+  width:14px;height:14px;border-radius:50%;
+  background:#2980b9;border:3px solid white;
+  box-shadow:0 0 0 2px #2980b9;
+  animation:pulse 2s infinite;
+}
+@keyframes pulse{
+  0%  {box-shadow:0 0 0 0 rgba(41,128,185,.6);}
+  70% {box-shadow:0 0 0 10px rgba(41,128,185,0);}
+  100%{box-shadow:0 0 0 0 rgba(41,128,185,0);}
+}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<button id="toggle">✕ Tutup</button>
+
+<div id="panel">
+  <h3>🗺️ WebGIS Risiko & Evakuasi Sesar Lembang</h3>
+  <p><b>GPS:</b> <span id="gps">menunggu sinyal...</span></p>
+  <p><b>Akurasi:</b> <span id="acc">-</span></p>
+  <hr style="border:none;border-top:1px solid #eee;margin:8px 0">
+  <p><b>Status Zona:</b><br><span id="risk">belum dianalisis</span></p>
+  <p><b>Jarak ke Sesar:</b> <span id="dist">-</span></p>
+  <hr style="border:none;border-top:1px solid #eee;margin:8px 0">
+  <p style="color:#666;font-size:12px">📌 Klik peta untuk menentukan titik tujuan evakuasi.</p>
+  <button class="btn btn-blue" onclick="buatRute()">🚶 Buat Jalur Evakuasi</button>
+  <button class="btn btn-red"  onclick="hapusRute()">🗑️ Hapus Rute</button>
+</div>
+
+<div id="legend">
+  <b>Legenda</b>
+  <div><span class="leg-line" style="background:#1a1a1a;height:5px"></span> &nbsp;Jalur Utama Sesar Lembang</div>
+  <div><span class="leg-line" style="background:#c0392b;height:3px"></span> &nbsp;Buffer Zona 1 (paling dekat)</div>
+  <div><span class="leg-line" style="background:#e67e22;height:3px"></span> &nbsp;Buffer Zona 2</div>
+  <div><span class="leg-line" style="background:#d4ac0d;height:3px"></span> &nbsp;Buffer Zona 3</div>
+  <div><span class="leg-line" style="background:#27ae60;height:3px"></span> &nbsp;Buffer Zona 4</div>
+  <div><span class="leg-line" style="background:#2c3e50;height:2px"></span> &nbsp;Batas Desa</div>
+  <div>🔵 Posisi Saya &nbsp; 🏁 Titik Tujuan</div>
+</div>
+
+<button class="floating" onclick="fokusGPS()" title="Fokus ke posisi saya">📍</button>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-omnivore@0.3.4/leaflet-omnivore.min.js"></script>
+<script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.min.js"></script>
+<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+
+<script>
+// ========== PETA ==========
+const map = L.map('map').setView([-6.83, 107.60], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  maxZoom:19, attribution:'© <a href="https://openstreetmap.org">OpenStreetMap</a>'
+}).addTo(map);
+
+document.getElementById('toggle').onclick = () => {
+  const p = document.getElementById('panel');
+  document.getElementById('toggle').textContent =
+    p.classList.toggle('hidden') ? '☰ Info' : '✕ Tutup';
+};
+
+// ========== JALUR SESAR UTAMA (TETAP HITAM PUTUS-PUTUS) ==========
+const faultLineCoords = [
+  [-6.8257, 107.4780], [-6.8380, 107.4920], [-6.8430, 107.5080],
+  [-6.8390, 107.5220], [-6.8340, 107.5340], [-6.8290, 107.5440],
+  [-6.8270, 107.5550], [-6.8250, 107.5650], [-6.8230, 107.5750],
+  [-6.8215, 107.5860], [-6.8210, 107.5990], [-6.8215, 107.6100],
+  [-6.8225, 107.6210], [-6.8255, 107.6350], [-6.8300, 107.6500],
+  [-6.8330, 107.6620], [-6.8340, 107.6780], [-6.8330, 107.6960],
+  [-6.8300, 107.7100], [-6.8290, 107.7200]
+];
+
+const faultLine = L.polyline(faultLineCoords, {
+  color: '#1a1a1a', 
+  weight: 5,        
+  opacity: 0.9,
+  dashArray: '10, 5' 
+}).addTo(map);
+faultLine.bindPopup('<b>Jalur Utama Sesar Lembang</b><br>Panjang ~29 km (Padalarang–Cisarua)');
+
+const faultLineTurf = turf.lineString(faultLineCoords.map(c => [c[1], c[0]]));
+
+// ========== WARNA BUFFER ZONA KML ==========
+const bufferColors = {
+  '1': { color:'#c0392b', weight:2.5, opacity:0.9 }, 
+  '2': { color:'#e67e22', weight:2.0, opacity:0.85 }, 
+  '3': { color:'#d4ac0d', weight:2.0, opacity:0.85 }, 
+  '4': { color:'#27ae60', weight:2.0, opacity:0.80 }  
+};
+
+const bufferLines = []; 
+const desaLayer   = L.layerGroup().addTo(map);
+const bufferLayer = L.layerGroup().addTo(map);
+
+// ========== MUAT KML (DIPAKSA AGAR WARNA TIDAK TERTUTUP BIRU RUTE) ==========
+const kmlLayer = omnivore.kml('SESAR_LEMBANG.kml')
+  .on('ready', function() {
+    map.fitBounds(this.getBounds());
+
+    this.eachLayer(function(layer) {
+      if (!layer.toGeoJSON) return;
+      const gj = layer.toGeoJSON();
+      if (!gj.geometry) return;
+
+      const geomType = gj.geometry.type;
+      const props = gj.properties || {};
+      const name  = (props.name || props.Name || props.NAME || '').toString().trim();
+
+      // Polygon -> Batas Desa
+      if (geomType === 'Polygon' || geomType === 'MultiPolygon') {
+        const l = L.geoJSON(gj, {
+          style: () => ({
+            color:'#2c3e50', weight:1.5, opacity:0.8,
+            fillColor:'#bdc3c7', fillOpacity:0.12
+          })
+        });
+        l.bindPopup(`<b>Desa:</b> ${name || 'Batas Wilayah'}`);
+        desaLayer.addLayer(l);
+        kmlLayer.removeLayer(layer);
+      }
+
+      // LineString -> Buffer Patahan KML
+      else if (geomType === 'LineString' || geomType === 'MultiLineString') {
+        const s = bufferColors[name] || { color: '#c0392b', weight: 3.0, opacity: 0.8 };
+        layer.setStyle({ color:s.color, weight:s.weight, opacity:s.opacity });
+
+        const zonaLabel = {
+          '1':'Zona 1 – Sangat Dekat Sesar',
+          '2':'Zona 2 – Dekat Sesar',
+          '3':'Zona 3 – Menengah',
+          '4':'Zona 4 – Jauh dari Sesar'
+        }[name] || 'Buffer Patahan';
+        layer.bindPopup(`<b>Buffer Patahan</b><br>${zonaLabel}`);
+
+        const coords = gj.geometry.type === 'LineString'
+          ? [gj.geometry.coordinates]
+          : gj.geometry.coordinates;
+        coords.forEach(c => { if (c.length >= 2) bufferLines.push(turf.lineString(c)); });
+
+        bufferLayer.addLayer(layer);
+        kmlLayer.removeLayer(layer);
+      }
+    });
+
+    desaLayer.bringToBack();
+    bufferLayer.bringToFront();
+    faultLine.bringToFront(); // Memastikan garis hitam utama berada di paling atas gaya visual
+
+    startGPS();
+  })
+  .on('error', function() {
+    console.error('KML gagal dimuat');
+    startGPS();
+  })
+  .addTo(map);
+
+// ========== GPS REALTIME HTML5 ACCURATE ==========
+let userPos    = null;
+let userMarker = null;
+let userCircle = null;
+
+const gpsIcon = L.divIcon({
+  className: '',
+  html: '<div class="gps-dot"></div>',
+  iconSize: [14,14], iconAnchor: [7,7], popupAnchor: [0,-10]
+});
+
+function startGPS() {
+  if (!navigator.geolocation) {
+    document.getElementById('gps').textContent = 'GPS tidak didukung';
+    return;
+  }
+  navigator.geolocation.watchPosition(onGPSSuccess, onGPSError, {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 15000
+  });
+}
+
+function onGPSSuccess(pos) {
+  const { latitude:lat, longitude:lng, accuracy:acc } = pos.coords;
+  userPos = L.latLng(lat, lng);
+
+  document.getElementById('gps').textContent = lat.toFixed(5) + ', ' + lng.toFixed(5);
+  document.getElementById('acc').textContent = '± ' + Math.round(acc) + ' m';
+
+  if (!userMarker) {
+    userMarker = L.marker(userPos, { icon:gpsIcon, zIndexOffset:1000 }).addTo(map).bindPopup('📍 Posisi Anda');
+    userCircle = L.circle(userPos, {
+      radius:acc, color:'#2980b9', fillColor:'#2980b9', fillOpacity:0.08, weight:1
+    }).addTo(map);
+    map.setView(userPos, 14); 
+  } else {
+    userMarker.setLatLng(userPos);
+    userCircle.setLatLng(userPos);
+    userCircle.setRadius(acc);
+  }
+  cekRisiko();
+}
+
+function onGPSError(err) {
+  const msg = { 1:'Izin GPS ditolak browser', 2:'Sinyal GPS lemah/hilang', 3:'GPS Timeout' };
+  document.getElementById('gps').textContent = msg[err.code] || 'Error GPS';
+}
+
+// ========== ANALISIS SPASIAL TURF ==========
+function cekRisiko() {
+  if (!userPos) return;
+  const pt = turf.point([userPos.lng, userPos.lat]);
+
+  let distFault = Infinity;
+  try { distFault = turf.pointToLineDistance(pt, faultLineTurf, { units:'kilometers' }); } catch(e) {}
+
+  let distBuffer = Infinity;
+  bufferLines.forEach(line => {
+    try {
+      const d = turf.pointToLineDistance(pt, line, { units:'kilometers' });
+      if (d < distBuffer) distBuffer = d;
+    } catch(e) {}
+  });
+
+  const minDist = Math.min(distFault, distBuffer);
+
+  let distText = '-';
+  if (minDist < Infinity) {
+    distText = minDist < 1
+      ? `<b>${Math.round(minDist * 1000)} m</b> dari jalur sesar`
+      : `<b>${minDist.toFixed(2)} km</b> dari jalur sesar`;
+  }
+  document.getElementById('dist').innerHTML = distText;
+
+  let html;
+  if      (minDist < 0.1 ) html = '<span class="badge" style="background:#8B0000">🔴 Sangat Berbahaya — &lt;100m dari Sesar</span>';
+  else if (minDist < 0.5 ) html = '<span class="badge" style="background:#c0392b">🟠 Berbahaya — &lt;500m dari Sesar</span>';
+  else if (minDist < 1.0 ) html = '<span class="badge" style="background:#e67e22">🟡 Waspada — &lt;1 km dari Sesar</span>';
+  else if (minDist < 2.0 ) html = '<span class="badge" style="background:#d4ac0d">🟡 Perhatian — &lt;2 km dari Sesar</span>';
+  else                      html = '<span class="badge" style="background:#27ae60">🟢 Relatif Aman — &gt;2 km dari Sesar</span>';
+
+  document.getElementById('risk').innerHTML = html;
+}
+
+// ========== KLIK PETA = TITIK TUJUAN ==========
+let safeMarker = null;
+const safeIcon = L.divIcon({
+  className:'',
+  html:'<div style="font-size:22px;filter:drop-shadow(0 1px 3px rgba(0,0,0,.5))">🏁</div>',
+  iconSize:[24,24], iconAnchor:[6,22], popupAnchor:[6,-22]
+});
+
+map.on('click', e => {
+  if (safeMarker) map.removeLayer(safeMarker);
+  safeMarker = L.marker(e.latlng, { icon:safeIcon })
+    .addTo(map).bindPopup('🏁 Titik Tujuan Evakuasi').openPopup();
+});
+
+// ========== RUTE EVAKUASI (DIBUAT TERISOLASI AGAR TIDAK MENGUBAH WARNA SESAR) ==========
+let route = null;
+
+function buatRute() {
+  if (!userPos)    { alert('Posisi GPS belum tersedia. Tunggu beberapa saat.'); return; }
+  if (!safeMarker) { alert('Klik peta terlebih dahulu untuk menentukan titik tujuan evakuasi.'); return; }
+  if (route) map.removeControl(route);
+  
+  route = L.Routing.control({
+    waypoints: [userPos, safeMarker.getLatLng()],
+    routeWhileDragging: false,
+    lineOptions: { styles:[{ color:'#0000ff', weight:5, opacity:0.75 }] }, // Jalur rute jalan dibuat Biru Murni terpisah
+    createMarker: () => null
+  }).addTo(map);
+
+  // Paksa garis sesar hitam & KML agar tetap berada di lapisan paling depan setelah rute biru muncul
+  setTimeout(() => {
+    if(faultLine) faultLine.bringToFront();
+    if(bufferLayer) bufferLayer.bringToFront();
+  }, 500);
+}
+
+function hapusRute() {
+  if (route)      { map.removeControl(route); route = null; }
+  if (safeMarker) { map.removeLayer(safeMarker); safeMarker = null; }
+}
+
+function fokusGPS() {
+  if (userPos) map.setView(userPos, 16);
+  else alert('Sinyal GPS belum tersedia.');
+}
+</script>
+</body>
+</html>
